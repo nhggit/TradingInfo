@@ -2,20 +2,22 @@ name: Daily Market Report Collector
 
 on:
   schedule:
-    # 毎日日本時間の午前9時 (UTC 0:00) に実行
     - cron: '0 0 * * *'
-  workflow_dispatch: # 手動実行も可能にする
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    # 書き込み権限を明示的に許可
+    permissions:
+      contents: write
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4 # バージョンを更新
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5 # バージョンを更新
       with:
         python-version: '3.11'
 
@@ -32,5 +34,10 @@ jobs:
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         git add daily_report_*.md
-        git commit -m "Add daily market report $(date +'%Y-%m-%d')" || exit 0
-        git push
+        # 変更がある場合のみコミット
+        if ! git diff --cached --quiet; then
+          git commit -m "Add daily market report $(date +'%Y-%m-%d')"
+          git push
+        else
+          echo "No changes to commit"
+        fi
