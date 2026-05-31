@@ -19,7 +19,8 @@ def get_market_data():
     for ticker, name in tickers.items():
         try:
             t = yf.Ticker(ticker)
-            hist = t.history(period="2d")
+            # 2日分のデータを取得して前日比を計算
+            hist = t.history(period="5d") # 余裕を持って5日分
             if len(hist) >= 2:
                 current_price = hist['Close'].iloc[-1]
                 prev_price = hist['Close'].iloc[-2]
@@ -35,8 +36,7 @@ def get_market_data():
     return pd.DataFrame(data_list)
 
 def get_news_headlines():
-    """主要ニュースの取得 (Yahoo Finance RSSを使用)"""
-    # 複数のRSSフィードを試行
+    """主要ニュースの取得"""
     urls = [
         "https://finance.yahoo.com/news/rssindex",
         "https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best",
@@ -46,7 +46,7 @@ def get_news_headlines():
     news_list = []
     for url in urls:
         try:
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, timeout=15 )
             if response.status_code == 200:
                 soup = BeautifulSoup(response.content, features="xml")
                 items = soup.find_all('item')
@@ -76,18 +76,20 @@ def generate_report():
     if not market_df.empty:
         report_content += market_df.to_markdown(index=False) + "\n\n"
     else:
-        report_content += "データ取得に失敗しました。\n\n"
+        report_content += "市場データの取得に失敗しました。\n\n"
         
     report_content += "## 📰 最新ニュースヘッドライン\n"
     if not news_df.empty:
         for _, row in news_df.iterrows():
             report_content += f"- [{row['タイトル']}]({row['リンク']}) ({row['公開日時']})\n"
     else:
-        report_content += "ニュース取得に失敗しました。\n\n"
+        report_content += "ニュースの取得に失敗しました。\n\n"
         
     report_content += "\n---\n*このレポートは自動生成されました。トレードの判断は自己責任でお願いいたします。*"
     
-    report_path = f"/home/ubuntu/daily_report_{datetime.now().strftime('%Y%m%d')}.md"
+    # 【重要】パスを相対パスに変更（GitHub Actions対応）
+    report_path = f"daily_report_{datetime.now().strftime('%Y%m%d')}.md"
+    
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report_content)
     
@@ -95,5 +97,9 @@ def generate_report():
 
 if __name__ == "__main__":
     print("情報収集を開始します...")
-    path = generate_report()
-    print(f"レポートが生成されました: {path}")
+    try:
+        path = generate_report()
+        print(f"レポートが正常に生成されました: {path}")
+    except Exception as e:
+        print(f"致命的なエラーが発生しました: {e}")
+        exit(1) # GitHub Actionsにエラーを通知
