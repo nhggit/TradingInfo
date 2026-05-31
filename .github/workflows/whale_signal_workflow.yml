@@ -1,0 +1,58 @@
+name: Whale Signal Generator
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # 毎日午前9時(日本時間)
+  workflow_dispatch: # 手動実行
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests pandas beautifulsoup4 tabulate
+
+    - name: Run signal generator
+      run: python whale_signal_generator.py
+
+    - name: Commit and push signal report
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add whale_signal_*.md
+        if ! git diff --cached --quiet; then
+          git commit -m "Add whale signal report $(date +'%Y-%m-%d')"
+          git push
+        else
+          echo "No changes to commit"
+        fi
+
+    - name: Send email with signal report
+      if: success()
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 465
+        username: ${{ secrets.MAIL_USERNAME }}
+        password: ${{ secrets.MAIL_PASSWORD }}
+        subject: '🐋 クジラ便乗シグナル通知 - ${{ github.event.repository.name }}'
+        body: '最新のクジラ便乗シグナルレポートを添付します。クジラの動向と大衆心理の乖離を確認してください。'
+        to: ${{ secrets.MAIL_RECIPIENT }}
+        from: ${{ secrets.MAIL_USERNAME }}
+        attachments: whale_signal_*.md
+        secure: true
