@@ -1,4 +1,4 @@
-name: Daily Market Report Collector (GitHub AI)
+name: Daily Market Report Collector (GitHub AI + Email)
 
 on:
   schedule:
@@ -12,7 +12,6 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     permissions:
       contents: write
-      # GitHub Modelsへのアクセスに必要
       models: read
 
     steps:
@@ -31,7 +30,6 @@ jobs:
 
     - name: Run collector script
       env:
-        # GitHub Actionsに標準搭載されているトークンを使用
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: python trader_info_collector.py
 
@@ -46,3 +44,17 @@ jobs:
         else
           echo "No changes to commit"
         fi
+
+    - name: Send email with report
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 465
+        username: ${{ secrets.MAIL_USERNAME }}
+        password: ${{ secrets.MAIL_PASSWORD }}
+        subject: 'Daily Market Report - ${{ github.event.repository.name }}'
+        body: '本日分のデイリーマーケットレポートを添付します。ご確認ください。'
+        to: ${{ secrets.MAIL_RECIPIENT }}
+        from: ${{ secrets.MAIL_USERNAME }}
+        attachments: daily_report_*.md
+        secure: true
