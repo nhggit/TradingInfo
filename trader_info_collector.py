@@ -257,6 +257,34 @@ def generate_report():
 
     return report_path  # ★ 戻り値は新規作成された単一ファイルのパス
 
+def cleanup_old_reports(current_report_path: str) -> None:
+    """
+    現在生成したレポート以外の古い daily_report_*.md を削除する。
+    ファイル名が daily_report_YYYYMMDD.md の形式に厳密一致するものだけを対象にし、
+    それ以外のファイルには一切手を出さない安全設計。
+    """
+    target_dir = os.path.dirname(os.path.abspath(current_report_path)) or "."
+    current_filename = os.path.basename(current_report_path)
+    pattern = re.compile(r"^daily_report_\d{8}\.md$")
+
+    deleted = []
+    for fname in os.listdir(target_dir):
+        if fname == current_filename:
+            continue
+        if not pattern.match(fname):
+            continue
+        fpath = os.path.join(target_dir, fname)
+        try:
+            os.remove(fpath)
+            deleted.append(fname)
+        except Exception as e:
+            print(f"⚠️ 削除失敗: {fname} ({e})")
+
+    if deleted:
+        print(f"🗑️ 古いレポートを削除しました: {', '.join(deleted)}")
+    else:
+        print("🗑️ 削除対象の古いレポートはありませんでした。")
+        
 
 if __name__ == "__main__":
     # 1. 今日のレポートを生成
@@ -264,4 +292,11 @@ if __name__ == "__main__":
     print(f"📝 レポート生成完了: {report_path}")
 
     # 2. その新規ファイル 1 つのみをメール送信
-    send_email_with_attachment(report_path)
+    send_success = send_email_with_attachment(report_path)
+
+    # 3. 送信成功後のみ、過去の古いレポートを削除
+    if send_success:
+        cleanup_old_reports(report_path)
+    else:
+        print("⚠️ 送信に失敗したため、古いレポートの削除はスキップしました。")
+        
