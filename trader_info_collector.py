@@ -4,7 +4,6 @@ import smtplib
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from email.mime.application import MIMEApplication
 
 import yfinance as yf
 import requests
@@ -28,51 +27,137 @@ MAIL_CONFIG = {
 }
 
 
-def send_email_with_attachment(file_path: str) -> bool:
+# ============================================================
+# Markdown → HTML 変換（軽量・依存ゼロ）
+# ============================================================
+def markdown_to_html(md: str) -> str:
     """
-    引数で渡された 1 つのファイル（最新レポート）だけを添付して送信する。
-    複数ファイル添付やディレクトリ指定は拒否する安全設計。
+    レポート用の最低限 Markdown → HTML 変換。
+    外部ライブラリ不使用で GitHub Actions でも動作する。
+    対応: 見出し(#〜###) / 太字 / 水平線 / テーブル / 段落
+    """
+    lines = md.split("\n")
+    html_lines = []
+    in_table = False
+
+    for line in lines:
+        # 水平線
+        if re.match(r"^-{3,}$", line.strip()):
+            if in_table:
+                html_lines.append("</table>")
+                in_table = False
+            html_lines.append("<hr>")
+            continue
+
+        # 見出し
+        h_match = re.match(r"^(#{1,3})\s+(.*)", line)
+        if h_match:
+            if in_table:
+                html_lines.append("</table>")
+                in_table = False
+            level = len(h_match.group(1))
+            text = h_match.group(2)
+            html_lines.append(f"<h{level}>{text}</h{level}>")
+            continue
+
+        # テーブル行（| で始まる行）
+        if line.startswith("|"):
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            # セパレータ行（|---|---| など）はスキップ
+            if all(re.match(r"^:?-+:?$", c) for c in cells):
+                continue
+            if not in_table:
+                html_lines.append('<table border="1" cellpadding="6" cellspacing="0" '
+                                  'style="border-collapse:collapse; font-size:13px;">')
+                # 最初の行をヘッダーとして扱う
+                row_html = "".join(f"<th style='background:#2c3e50;color:#fff;'>{c}</th>" for c in cells)
+                html_lines.append(f"<tr>{row_html}</tr>")
+                in_table = True
+            else:
+                row_html = "".join(f"<td>{c}</td>" for c in cells)
+                html_lines.append(f"<tr>{row_html}</tr>")
+            continue
+
+        # テーブル終了
+        if in_table:
+            html_lines.append("</table>")
+            in_table = False
+
+        # 空行
+        if not line.strip():
+            html_lines.append("<br>")
+            continue
+
+        # 太字 **text**
+        line = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", line)
+
+        # 通常段落
+        html_lines.append(f"<p style='margin:4px 0;'>{line}</p>")
+
+    if in_table:
+        html_lines.append("</table>")
+
+    return "\n".join(html_lines)
+
+
+def build_html_email(report_md: str) -> str:
+    """レポートMarkdownをメール用HTML全体にラップする"""
+    body_html = markdown_to_html(report_md)
+    return f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<style>
+  body      {{ font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 14px;
+               color: #222; background: #f5f5f5; margin: 0; padding: 20px; }}
+  .container{{ max-width: 800px; margin: 0 auto; background: #fff;
+               border-radius: 8px; padding: 30px;
+               box-shadow: 0 2px 8px rgba(0,0,0,.12); }}
+  h1        {{ color: #1a252f; border-bottom: 3px solid #2c3e50; padding-bottom: 8px; }}
+  h2        {{ color: #2c3e50; border-left: 4px solid #3498db; padding-left: 10px; }}
+  h3        {{ color: #34495e; }}
+  table     {{ width: 100%; margin: 12px 0; }}
+  tr:nth-child(even) td {{ background: #f0f4f8; }}
+  hr        {{ border: none; border-top: 1px solid #ddd; margin: 20px 0; }}
+  .footer   {{ font-size: 11px; color: #999; text-align: center; margin-top: 20px; }}
+</style>
+</head>
+<body>
+<div class="container">
+{body_html}
+<div class="footer">このレポートはGitHub Modelsを利用して自動生成されました。</div>
+</div>
+</body>
+</html>"""
+
+
+# ============================================================
+# メール送信（本文にHTMLを埋め込む）
+# ============================================================
+def send_email_as_html(report_md: str) -> bool:
+    """
+    レポートMarkdownをHTMLに変換し、メール本文として送信する。
+    ファイル添付・ファイル生成は一切行わない。
     """
     if not (MAIL_CONFIG["user"] and MAIL_CONFIG["password"] and MAIL_CONFIG["to_addrs"]):
         print("⚠️ メール設定が不完全です (MAIL_USER / MAIL_PASS / MAIL_TO を確認)。")
         return False
 
-    if not file_path or not os.path.exists(file_path):
-        print(f"⚠️ 送信対象のファイルが存在しません: {file_path}")
-        return False
+    today = datetime.now().strftime("%Y-%m-%d")
 
-    # ディレクトリを誤って指定しても送信しない
-    if os.path.isdir(file_path):
-        print(f"⚠️ ディレクトリは送信できません: {file_path}")
-        return False
-
-    filename = os.path.basename(file_path)
-
-    # --- メール本文作成 ---
-    msg = MIMEMultipart()
-    msg["Subject"] = f"🤖 デイリーレポート {datetime.now().strftime('%Y-%m-%d')}"
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"🤖 デイリーレポート {today}"
     msg["From"] = MAIL_CONFIG["from_addr"]
     msg["To"] = ", ".join(MAIL_CONFIG["to_addrs"])
 
-    body = (
-        "お疲れ様です。\n"
-        "本日のプロトレーダー・デイリーレポートを添付いたします。\n\n"
-        f"添付ファイル: {filename}\n"
-        f"生成日時: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-    )
-    msg.attach(MIMEText(body, "plain", "utf-8"))
+    # プレーンテキスト（フォールバック用）
+    plain_text = re.sub(r"<[^>]+>", "", report_md)
+    msg.attach(MIMEText(plain_text, "plain", "utf-8"))
 
-    # --- ★ 単一ファイルのみを添付 ---
-    try:
-        with open(file_path, "rb") as f:
-            part = MIMEApplication(f.read(), Name=filename)
-            part["Content-Disposition"] = f'attachment; filename="{filename}"'
-            msg.attach(part)
-    except Exception as e:
-        print(f"❌ 添付ファイル読み込みエラー: {e}")
-        return False
+    # HTML本文（優先表示）
+    html_body = build_html_email(report_md)
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-    # --- SMTP 送信 ---
     try:
         with smtplib.SMTP(MAIL_CONFIG["smtp_server"], MAIL_CONFIG["smtp_port"], timeout=30) as server:
             server.ehlo()
@@ -83,7 +168,7 @@ def send_email_with_attachment(file_path: str) -> bool:
                 MAIL_CONFIG["to_addrs"],
                 msg.as_string()
             )
-        print(f"✅ メール送信成功: {filename} → {MAIL_CONFIG['to_addrs']}")
+        print(f"✅ メール送信成功 → {MAIL_CONFIG['to_addrs']}")
         return True
     except Exception as e:
         print(f"❌ メール送信エラー: {e}")
@@ -91,7 +176,7 @@ def send_email_with_attachment(file_path: str) -> bool:
 
 
 # ============================================================
-# 以下、元のロジック
+# データ取得・AI解析
 # ============================================================
 def get_market_data():
     """主要市場データの取得"""
@@ -232,8 +317,11 @@ def analyze_with_github_ai(market_data, sentiment_data, news_headlines):
         return f"GitHub AI解析エラー: {e}\n(※週末やメンテナンスによりAIモデルが一時的に利用できない場合があります)"
 
 
-def generate_report():
-    """レポートの生成（ファイルパスを返す）"""
+# ============================================================
+# レポート生成（文字列を返す。ファイル保存しない）
+# ============================================================
+def generate_report() -> str:
+    """レポートをMarkdown文字列として返す（ファイル保存なし）"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     market_df = get_market_data()
     sentiment_df = get_sentiment_data()
@@ -241,62 +329,26 @@ def generate_report():
 
     ai_analysis = analyze_with_github_ai(market_df, sentiment_df, news_headlines)
 
-    report_content = f"# 🤖 GitHub AI搭載プロトレーダー・デイリーレポート\n"
-    report_content += f"生成日時: {now}\n\n"
-    report_content += "## 🧠 AIによる市場解析と戦略\n"
-    report_content += f"{ai_analysis}\n\n"
-    report_content += "## 👥 大衆のポジション動向（センチメント）\n"
-    report_content += sentiment_df.to_markdown(index=False) + "\n\n"
-    report_content += "## 📈 主要市場サマリー\n"
-    report_content += market_df.to_markdown(index=False) + "\n\n"
-    report_content += "\n---\n*このレポートはGitHub Modelsを利用して自動生成されました。*"
+    report = (
+        f"# 🤖 GitHub AI搭載プロトレーダー・デイリーレポート\n"
+        f"生成日時: {now}\n\n"
+        f"## 🧠 AIによる市場解析と戦略\n"
+        f"{ai_analysis}\n\n"
+        f"## 👥 大衆のポジション動向（センチメント）\n"
+        f"{sentiment_df.to_markdown(index=False)}\n\n"
+        f"## 📈 主要市場サマリー\n"
+        f"{market_df.to_markdown(index=False)}\n\n"
+        "---\n"
+        "*このレポートはGitHub Modelsを利用して自動生成されました。*"
+    )
+    return report
 
-    report_path = f"daily_report_{datetime.now().strftime('%Y%m%d')}.md"
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write(report_content)
 
-    return report_path  # ★ 戻り値は新規作成された単一ファイルのパス
-
-def cleanup_old_reports(current_report_path: str) -> None:
-    """
-    現在生成したレポート以外の古い daily_report_*.md を削除する。
-    ファイル名が daily_report_YYYYMMDD.md の形式に厳密一致するものだけを対象にし、
-    それ以外のファイルには一切手を出さない安全設計。
-    """
-    target_dir = os.path.dirname(os.path.abspath(current_report_path)) or "."
-    current_filename = os.path.basename(current_report_path)
-    pattern = re.compile(r"^daily_report_\d{8}\.md$")
-
-    deleted = []
-    for fname in os.listdir(target_dir):
-        if fname == current_filename:
-            continue
-        if not pattern.match(fname):
-            continue
-        fpath = os.path.join(target_dir, fname)
-        try:
-            os.remove(fpath)
-            deleted.append(fname)
-        except Exception as e:
-            print(f"⚠️ 削除失敗: {fname} ({e})")
-
-    if deleted:
-        print(f"🗑️ 古いレポートを削除しました: {', '.join(deleted)}")
-    else:
-        print("🗑️ 削除対象の古いレポートはありませんでした。")
-        
-
+# ============================================================
+# エントリーポイント
+# ============================================================
 if __name__ == "__main__":
-    # 1. 今日のレポートを生成
-    report_path = generate_report()
-    print(f"📝 レポート生成完了: {report_path}")
-
-    # 2. その新規ファイル 1 つのみをメール送信
-    send_success = send_email_with_attachment(report_path)
-
-    # 3. 送信成功後のみ、過去の古いレポートを削除
-    if send_success:
-        cleanup_old_reports(report_path)
-    else:
-        print("⚠️ 送信に失敗したため、古いレポートの削除はスキップしました。")
-        
+    print("📊 レポート生成中...")
+    report_md = generate_report()
+    print("📝 レポート生成完了。メール送信中...")
+    send_email_as_html(report_md)
